@@ -42,13 +42,15 @@ ax.text(esp_x + esp_w/2, esp_y + esp_h - 0.85,
         "USB CH340  →  /dev/tty.usbserial-*  @ 115200", color="#cfd8dc",
         ha="center", va="center", fontsize=9, fontstyle="italic")
 
-# Pin headers we'll draw on the right edge of the ESP board
+# Pin headers on the right edge of the ESP board.
+# IMPORTANT: order matches the TDS module pin order (+, -, A0, T1) so the
+# wires can run straight across without crossing.
 pins = [
-    # (label,        gpio,        color,          y_offset_from_top)
-    ("3V3",          "+3.3 V",    COL_RED,        1.6),
-    ("GND",          "GND",       COL_BLACK,      2.2),
-    ("D7 / GPIO14",  "1-Wire DQ", COL_BLUE,       2.8),
-    ("SVP / GPIO34", "ADC1_6",    COL_GREEN,      3.4),
+    # (label,         role,         color,        y_offset_from_top)
+    ("3V3",           "+3.3 V",     COL_RED,      1.6),
+    ("GND",           "GND",        COL_BLACK,    2.2),
+    ("IO34 (ADC1_6)", "TDS analog", COL_GREEN,    2.8),
+    ("D7 / IO14",     "1-Wire DQ",  COL_BLUE,     3.4),
 ]
 pin_x = esp_x + esp_w  # right edge of board
 pin_box_w, pin_box_h = 1.7, 0.42
@@ -66,8 +68,8 @@ for label, role, col, off in pins:
     ax.text(pin_x + pin_box_w/2 - 0.05, py,
             label, color=COL_BLACK, ha="center", va="center",
             fontsize=8.5, fontweight="bold")
-    ax.text(pin_x + pin_box_w + 0.05, py,
-            role, color=col, ha="left", va="center", fontsize=8)
+    # wire anchors at the right edge of the gold pad (no role text on the
+    # outer side, so the wire never crosses any text)
     esp_pin_coords[label] = (pin_x + pin_box_w - 0.05, py)
 
 # ---------- TDS V1.0 module ----------
@@ -85,18 +87,20 @@ ax.text(tds_x + tds_w/2, tds_y + tds_h - 0.7,
         "(DFRobot SEN0244-class\n+ on-board DS18B20)",
         color="#dcedc8", ha="center", va="center", fontsize=8, fontstyle="italic")
 
-# 4 pins down the LEFT edge of the TDS module
+# 4 pins down the LEFT edge of the TDS module.
+# Y positions are taken directly from the ESP pin coordinates so wires are
+# perfectly horizontal — no Manhattan bends, no crossings.
 tds_pins = [
-    # (label, role,        color,      y_within_module)
-    ("+",    "VCC 3V3",     COL_RED,    1.85),
-    ("-",    "GND",         COL_BLACK,  1.40),
-    ("A0",   "TDS analog",  COL_GREEN,  0.95),
-    ("T1",   "DS18B20 DQ",  COL_BLUE,   0.50),
+    # (label, role,         color,      esp_pin_to_align_with)
+    ("+",    "VCC (3V3)",    COL_RED,    "3V3"),
+    ("-",    "GND",          COL_BLACK,  "GND"),
+    ("A0",   "TDS analog",   COL_GREEN,  "IO34 (ADC1_6)"),
+    ("T1",   "DS18B20 DQ",   COL_BLUE,   "D7 / IO14"),
 ]
 tds_pin_coords = {}
-pin_box_w2, pin_box_h2 = 0.5, 0.36
-for label, role, col, dy in tds_pins:
-    py = tds_y + dy
+pin_box_w2, pin_box_h2 = 0.5, 0.42
+for label, role, col, align_to in tds_pins:
+    py = esp_pin_coords[align_to][1]   # same y as the ESP pad it talks to
     pad = mpatches.FancyBboxPatch(
         (tds_x - 0.45, py - pin_box_h2/2), pin_box_w2, pin_box_h2,
         boxstyle="round,pad=0.02,rounding_size=0.06",
@@ -105,7 +109,7 @@ for label, role, col, dy in tds_pins:
     ax.add_patch(pad)
     ax.text(tds_x - 0.45 + pin_box_w2/2, py,
             label, color=COL_BLACK, ha="center", va="center",
-            fontsize=10, fontweight="bold")
+            fontsize=11, fontweight="bold")
     ax.text(tds_x + 0.15, py, role, color="white",
             ha="left", va="center", fontsize=9)
     tds_pin_coords[label] = (tds_x - 0.45, py)
@@ -128,23 +132,19 @@ for ex in (probe_x + 0.3, probe_x + 0.7):
 ax.text(probe_x + 0.5, probe_y - 0.85, "2 conductivity\nelectrodes",
         ha="center", va="center", fontsize=7.5, color="#555")
 
-# ---------- wires (Manhattan-routed) ----------
-def manhattan(p1, p2, midx, color, **kw):
-    x1, y1 = p1; x2, y2 = p2
-    ax.plot([x1, midx, midx, x2], [y1, y1, y2, y2],
-            color=color, **WIRE, **kw)
+# ---------- wires (straight horizontal, no crossings) ----------
+def straight(p_esp, p_tds, color, label):
+    x1, y = p_esp; x2, _ = p_tds
+    ax.plot([x1, x2], [y, y], color=color, **WIRE)
+    # mid-wire label
+    ax.text((x1 + x2) / 2, y + 0.18, label,
+            color=color, fontsize=9, fontweight="bold",
+            ha="center", va="bottom")
 
-# vertical channels in different x to keep wires readable
-manhattan(esp_pin_coords["3V3"],         tds_pin_coords["+"],  midx=8.05, color=COL_RED)
-manhattan(esp_pin_coords["GND"],         tds_pin_coords["-"],  midx=8.30, color=COL_BLACK)
-manhattan(esp_pin_coords["SVP / GPIO34"],tds_pin_coords["A0"], midx=8.55, color=COL_GREEN)
-manhattan(esp_pin_coords["D7 / GPIO14"], tds_pin_coords["T1"], midx=8.80, color=COL_BLUE)
-
-# Channel legend at the very top of the wires
-ax.text(8.05, 7.20, "+3V3",   color=COL_RED,   fontsize=8.5, fontweight="bold", ha="center")
-ax.text(8.30, 7.45, "GND",    color=COL_BLACK, fontsize=8.5, fontweight="bold", ha="center")
-ax.text(8.55, 7.70, "Analog", color=COL_GREEN, fontsize=8.5, fontweight="bold", ha="center")
-ax.text(8.80, 7.95, "1-Wire", color=COL_BLUE,  fontsize=8.5, fontweight="bold", ha="center")
+straight(esp_pin_coords["3V3"],           tds_pin_coords["+"], COL_RED,   "+3V3")
+straight(esp_pin_coords["GND"],           tds_pin_coords["-"], COL_BLACK, "GND")
+straight(esp_pin_coords["IO34 (ADC1_6)"], tds_pin_coords["A0"], COL_GREEN, "Analog")
+straight(esp_pin_coords["D7 / IO14"],     tds_pin_coords["T1"], COL_BLUE,  "1-Wire")
 
 # ---------- legend / notes ----------
 notes = (
