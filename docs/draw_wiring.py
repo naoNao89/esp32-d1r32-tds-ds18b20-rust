@@ -47,10 +47,12 @@ ax.text(esp_x + esp_w/2, esp_y + esp_h - 0.85,
 # wires can run straight across without crossing.
 pins = [
     # (label,         role,         color,        y_offset_from_top)
-    ("3V3",           "+3.3 V",     COL_RED,      1.6),
-    ("GND",           "GND",        COL_BLACK,    2.2),
-    ("IO34 (ADC1_6)", "TDS analog", COL_GREEN,    2.8),
-    ("D7 / IO14",     "1-Wire DQ",  COL_BLUE,     3.4),
+    # Order matches the TDS V1.0 silkscreen on the right-edge header
+    # (top→bottom: A0, T1, -, +).
+    ("IO34 (ADC1_6)", "TDS analog", COL_GREEN,    1.6),
+    ("D7 / IO14",     "1-Wire DQ",  COL_BLUE,     2.2),
+    ("GND",           "GND",        COL_BLACK,    2.8),
+    ("3V3",           "+3.3 V",     COL_RED,      3.4),
 ]
 pin_x = esp_x + esp_w  # right edge of board
 pin_box_w, pin_box_h = 1.7, 0.42
@@ -91,11 +93,16 @@ ax.text(tds_x + tds_w/2, tds_y + tds_h - 0.7,
 # Y positions are taken directly from the ESP pin coordinates so wires are
 # perfectly horizontal — no Manhattan bends, no crossings.
 tds_pins = [
-    # (label, role,         color,      esp_pin_to_align_with)
-    ("+",    "VCC (3V3)",    COL_RED,    "3V3"),
-    ("-",    "GND",          COL_BLACK,  "GND"),
-    ("A0",   "TDS analog",   COL_GREEN,  "IO34 (ADC1_6)"),
-    ("T1",   "DS18B20 DQ",   COL_BLUE,   "D7 / IO14"),
+    # (label, role,                       color,      esp_pin_to_align_with)
+    # Right-edge header on the TDS V1.0 board (silkscreen, top→bottom):
+    #   A0  – TDS analog out
+    #   T1  – DS18B20 DQ (passes through from the left-side 3-pin connector)
+    #   -   – GND
+    #   +   – VCC
+    ("A0",   "TDS analog out",            COL_GREEN,  "IO34 (ADC1_6)"),
+    ("T1",   "DS18B20 DQ (from probe)",   COL_BLUE,   "D7 / IO14"),
+    ("-",    "GND",                       COL_BLACK,  "GND"),
+    ("+",    "VCC (3V3)",                 COL_RED,    "3V3"),
 ]
 tds_pin_coords = {}
 pin_box_w2, pin_box_h2 = 0.5, 0.42

@@ -244,9 +244,11 @@ fn ds18b20_read_celsius(ow: &mut OneWire) -> Result<f32, OwError> {
 
 // ---------- TDS (Gravity SEN0244 / TDS V1.0) ----------
 
-/// VCC supplied to the TDS board. With 3V3 powering the probe, output stays
-/// well within the ESP32 ADC range. Used for the conductivity formula.
-const TDS_VREF: f32 = 3.3;
+/// VCC supplied to the TDS board. The DFRobot reference firmware was
+/// calibrated at 5 V. We power the board from the D1 R32 5V (USB) rail.
+/// NOTE: GPIO34 is 3.3 V tolerant only — the TDS board's analog output
+/// peaks around 2.3 V even on 5 V supply, which is safe for the ADC.
+const TDS_VREF: f32 = 5.0;
 
 /// ADC full scale at 11 dB attenuation on ESP32 (~0..3.3 V mapped to 0..4095).
 const ADC_VREF: f32 = 3.3;
@@ -326,18 +328,27 @@ fn main() -> ! {
             any_ok
         };
 
-        // 2. TDS — sample across ~150 ms so we average over the probe's
-        //    AC excitation (~1 kHz). Take median of 30 samples to also
-        //    reject outliers/spikes. Samples are spaced 5 ms apart.
-        let mut samples = [0u16; 30];
+        // 2. TDS — the board excites the probe at ~1 kHz, so sampling at
+        //    just 200 Hz aliases away the peak. Sample as fast as the ADC
+        //    allows for ~50 ms to be sure we catch many AC cycles, then
+        //    report (a) the average of the top 1% of samples (peak), (b)
+        //    median (DC offset), (c) min/max for sanity.
+        const N: usize = 600;
+        let mut samples = [0u16; N];
         for s in samples.iter_mut() {
             *s = block!(adc1.read_oneshot(&mut tds_pin)).unwrap();
-            delay.delay_micros(5_000);
         }
         samples.sort_unstable();
-        // trimmed mean: drop 5 lowest + 5 highest, average the middle 20
-        let trimmed: u32 = samples[5..25].iter().map(|&x| x as u32).sum();
-        let raw = trimmed / 20;
+        let smin = samples[0];
+        let smed = samples[N/2];
+        let smax = samples[N-1];
+        // average of top 6 samples (top 1%) for a stable peak estimate
+        let peak_sum: u32 = samples[N-6..].iter().map(|&x| x as u32).sum();
+        let raw = (peak_sum / 6) as u16;
+        println!(
+            "  TDS samples (n={}): min={:>4}  median={:>4}  peak_avg={:>4}  max={:>4}",
+            N, smin, smed, raw, smax
+        );
         let v_adc = (raw as f32) * ADC_VREF / ADC_MAX;
         let ppm = tds_ppm_from_voltage(v_adc, last_temp_c);
 
