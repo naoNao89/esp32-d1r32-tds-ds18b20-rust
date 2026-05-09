@@ -118,9 +118,107 @@ fn crc8(data: &[u8]) -> u8 {
 
 // ---------- DS18B20 ----------
 
-const SKIP_ROM: u8 = 0xCC;
-const CONVERT_T: u8 = 0x44;
+const SEARCH_ROM:     u8 = 0xF0;
+const MATCH_ROM:      u8 = 0x55;
+const SKIP_ROM:       u8 = 0xCC;
+const CONVERT_T:      u8 = 0x44;
 const READ_SCRATCHPAD: u8 = 0xBE;
+
+/// Standard Maxim 1-Wire ROM SEARCH. Returns up to `MAX` 8-byte ROM codes.
+/// See "Application Note 187" / DS18B20 datasheet "ROM SEARCH" section.
+fn ow_search<const MAX: usize>(ow: &mut OneWire) -> ([[u8; 8]; MAX], usize) {
+    let mut found: [[u8; 8]; MAX] = [[0u8; 8]; MAX];
+    let mut count = 0;
+    let mut last_discrepancy: i32 = 0;
+    let mut last_device = false;
+    let mut rom_no: [u8; 8] = [0; 8];
+
+    while !last_device && count < MAX {
+        if ow.reset().is_err() {
+            return (found, count);
+        }
+        ow.write_byte(SEARCH_ROM);
+
+        let mut id_bit_number: i32 = 1;
+        let mut last_zero: i32 = 0;
+        let mut rom_byte_number: usize = 0;
+        let mut rom_byte_mask: u8 = 1;
+
+        loop {
+            let id_bit  = ow.read_bit();
+            let cmp_bit = ow.read_bit();
+            if id_bit && cmp_bit {
+                // no devices responded
+                return (found, count);
+            }
+            let search_direction: bool = if id_bit != cmp_bit {
+                id_bit
+            } else {
+                // discrepancy
+                if id_bit_number < last_discrepancy {
+                    (rom_no[rom_byte_number] & rom_byte_mask) != 0
+                } else {
+                    id_bit_number == last_discrepancy
+                }
+            };
+            if !id_bit && !cmp_bit && !search_direction {
+                last_zero = id_bit_number;
+            }
+            if search_direction {
+                rom_no[rom_byte_number] |= rom_byte_mask;
+            } else {
+                rom_no[rom_byte_number] &= !rom_byte_mask;
+            }
+            ow.write_bit(search_direction);
+
+            id_bit_number += 1;
+            rom_byte_mask = rom_byte_mask.wrapping_shl(1);
+            if rom_byte_mask == 0 {
+                rom_byte_number += 1;
+                rom_byte_mask = 1;
+            }
+            if rom_byte_number >= 8 {
+                break;
+            }
+        }
+
+        if id_bit_number >= 65 {
+            last_discrepancy = last_zero;
+            if last_discrepancy == 0 {
+                last_device = true;
+            }
+            // CRC check on the ROM (last byte must equal CRC of first 7).
+            if crc8(&rom_no[..7]) == rom_no[7] {
+                found[count] = rom_no;
+                count += 1;
+            }
+        }
+    }
+    (found, count)
+}
+
+/// Read temperature from the DS18B20 with the given ROM. Issues an explicit
+/// MATCH_ROM so this works on a bus with multiple sensors.
+fn ds18b20_read_celsius_rom(ow: &mut OneWire, rom: &[u8; 8]) -> Result<f32, OwError> {
+    ow.reset()?;
+    ow.write_byte(MATCH_ROM);
+    for &b in rom { ow.write_byte(b); }
+    ow.write_byte(CONVERT_T);
+    ow.d.delay_millis(800);
+
+    ow.reset()?;
+    ow.write_byte(MATCH_ROM);
+    for &b in rom { ow.write_byte(b); }
+    ow.write_byte(READ_SCRATCHPAD);
+
+    let mut scratch = [0u8; 9];
+    for s in scratch.iter_mut() { *s = ow.read_byte(); }
+    if crc8(&scratch[..8]) != scratch[8] {
+        return Err(OwError::CrcMismatch);
+    }
+    let raw = i16::from_le_bytes([scratch[0], scratch[1]]);
+    Ok(raw as f32 / 16.0)
+}
 
 fn ds18b20_read_celsius(ow: &mut OneWire) -> Result<f32, OwError> {
     ow.reset()?;
@@ -183,14 +281,49 @@ fn main() -> ! {
 
     println!("D1 R32 + DS18B20 (GPIO14) + TDS V1.0 (GPIO34) starting...");
 
-    // Last good temperature, for compensation when DS18B20 hiccups.
+    // Last good temperature, used to compensate the TDS reading.
     let mut last_temp_c: f32 = 25.0;
 
+    // Re-scan the bus every iteration so the user can plug/unplug a DS18B20
+    // at runtime and see the count + ROM list update live.
     loop {
-        // 1. Temperature (DS18B20)
-        let temp_ok = match ds18b20_read_celsius(&mut ow) {
-            Ok(c) => { last_temp_c = c; true }
-            Err(_) => false,
+        let (roms, n) = ow_search::<4>(&mut ow);
+        println!("--- 1-Wire scan on GPIO14: found {} device(s) ---", n);
+        for i in 0..n {
+            let r = &roms[i];
+            println!(
+                "  [{}] ROM = {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}{}",
+                i, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7],
+                if r[0] == 0x28 { " (DS18B20)" } else { "" }
+            );
+        }
+        if n == 0 {
+            println!("  (no devices — check wiring / 4.7k pull-up)");
+        }
+
+        // ---- 1. Temperature(s) ----
+        let temp_ok = if n == 0 {
+            match ds18b20_read_celsius(&mut ow) {
+                Ok(c) => { last_temp_c = c; true }
+                Err(_) => false,
+            }
+        } else {
+            let mut any_ok = false;
+            for i in 0..n {
+                match ds18b20_read_celsius_rom(&mut ow, &roms[i]) {
+                    Ok(c) => {
+                        let r = &roms[i];
+                        println!(
+                            "  T[{}] {:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X} = {:.3} C",
+                            i, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], c
+                        );
+                        last_temp_c = c;
+                        any_ok = true;
+                    }
+                    Err(e) => println!("  T[{}] read error: {:?}", i, e),
+                }
+            }
+            any_ok
         };
 
         // 2. TDS — sample across ~150 ms so we average over the probe's
